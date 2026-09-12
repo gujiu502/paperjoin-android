@@ -18,13 +18,16 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.LruCache;
 import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
@@ -62,6 +65,7 @@ public final class MainActivity extends Activity {
         INK = Color.rgb(247, 248, 250), MUTED = Color.rgb(164, 170, 185),
         ACCENT = Color.rgb(94, 106, 210), SOFT = Color.rgb(177, 185, 255);
     private static final int PICK = 10, SAVE = 11;
+    private static final long MULTI_SELECT_HOLD_MS = 2500;
     final ArrayList<PageItem> pages = new ArrayList<>();
     private final Set<String> selected = new HashSet<>();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -85,6 +89,68 @@ public final class MainActivity extends Activity {
     private File pendingExport;
     private String exportDetail = "";
     private int previewGeneration;
+    private PageItem heldPage;
+    private float holdX, holdY;
+    private boolean consumeHoldTouch;
+    private final Runnable selectHeldPage = () -> {
+        if (heldPage == null || busy) return;
+        PageItem page = heldPage;
+        cancelImageHold();
+        // End the native long-press drag before turning this stationary hold into selection.
+        long now = SystemClock.uptimeMillis();
+        MotionEvent cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0, 0, 0);
+        try { super.dispatchTouchEvent(cancel); }
+        finally { cancel.recycle(); }
+        consumeHoldTouch = true;
+        selected.add(page.id);
+        adapter.notifyDataSetChanged();
+        refresh();
+        root.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+    };
+
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (consumeHoldTouch && action != MotionEvent.ACTION_DOWN) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) consumeHoldTouch = false;
+            return true;
+        }
+        if (action == MotionEvent.ACTION_DOWN) {
+            consumeHoldTouch = false;
+            cancelImageHold();
+            if (!busy && grid != null) {
+                int[] location = new int[2];
+                grid.getLocationOnScreen(location);
+                float x = event.getRawX() - location[0], y = event.getRawY() - location[1];
+                View card = x >= 0 && y >= 0 && x < grid.getWidth() && y < grid.getHeight()
+                        ? grid.findChildViewUnder(x, y) : null;
+                if (card != null) {
+                    PageHolder holder = (PageHolder) grid.getChildViewHolder(card);
+                    holder.image.getLocationOnScreen(location);
+                    x = event.getRawX() - location[0];
+                    y = event.getRawY() - location[1];
+                    int position = holder.getBindingAdapterPosition();
+                    if (position >= 0 && x >= 0 && y >= 0 && x < holder.image.getWidth() && y < holder.image.getHeight()) {
+                        heldPage = pages.get(position);
+                        holdX = event.getRawX();
+                        holdY = event.getRawY();
+                        root.postDelayed(selectHeldPage, MULTI_SELECT_HOLD_MS);
+                    }
+                }
+            }
+        } else if (action == MotionEvent.ACTION_MOVE && heldPage != null) {
+            float dx = event.getRawX() - holdX, dy = event.getRawY() - holdY;
+            int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+            if (dx * dx + dy * dy > slop * slop) cancelImageHold();
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN) {
+            cancelImageHold();
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    private void cancelImageHold() {
+        if (root != null) root.removeCallbacks(selectHeldPage);
+        heldPage = null;
+    }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -127,11 +193,19 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        cancelImageHold();
         worker.shutdown();
         super.onDestroy();
     }
 
+    @Override protected void onPause() {
+        cancelImageHold();
+        consumeHoldTouch = false;
+        super.onPause();
+    }
+
     private void buildUi() {
+        cancelImageHold();
         controls.clear();
         fileName = null;
         exportButton = null;
@@ -228,7 +302,8 @@ public final class MainActivity extends Activity {
             @Override public void onSwiped(RecyclerView.ViewHolder vh, int direction) {}
             @Override public void clearView(RecyclerView rv, RecyclerView.ViewHolder vh) {
                 super.clearView(rv, vh);
-                adapter.notifyDataSetChanged();
+                // Cancellation may detach the dragged card during a layout pass.
+                rv.post(() -> rv.getAdapter().notifyDataSetChanged());
                 persist();
             }
         });
@@ -587,6 +662,7 @@ public final class MainActivity extends Activity {
     }
 
     private void setBusy(boolean value, String text) {
+        if (value) cancelImageHold();
         busy = value;
         status = text;
         if (value) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -602,8 +678,8 @@ public final class MainActivity extends Activity {
         for (PageItem p : pages) if (files.add(p.sourcePath)) bytes += new File(p.sourcePath).length();
         count.setText(pages.isEmpty() ? "PDF、JPG、PNG、WebP · 可一次選取多個檔案" :
             pages.size() + " 頁  ·  " + files.size() + " 個來源  ·  " + size(bytes));
-        selectionLabel.setText(selected.isEmpty() ? "長按拖拉排序 · 點圖放大 · 旋轉會套用全部頁面" :
-            "已選 " + selected.size() + " 頁 · 旋轉只套用選取頁面");
+        selectionLabel.setText(selected.isEmpty() ? "長按拖拉排序 · 按住圖片 2.5 秒多選 · 點圖放大" :
+            "已選 " + selected.size() + " 頁 · 點圖繼續多選 · 旋轉只套用選取頁面");
         selectButton.setText(!pages.isEmpty() && selected.size() == pages.size() ? "取消" : "全選");
         empty.setVisibility(pages.isEmpty() ? View.VISIBLE : View.GONE);
         grid.setVisibility(pages.isEmpty() ? View.GONE : View.VISIBLE);
@@ -695,7 +771,11 @@ public final class MainActivity extends Activity {
             }
             h.image.setBitmap(bitmap, p.rotation);
             h.image.setContentDescription("預覽第 " + (position + 1) + " 頁，" + p.sourceName);
-            h.image.setOnClickListener(v -> preview(h.getBindingAdapterPosition()));
+            h.image.setOnClickListener(v -> {
+                if (busy) return;
+                if (selected.isEmpty()) preview(h.getBindingAdapterPosition());
+                else h.check.performClick();
+            });
             h.check.setOnClickListener(v -> {
                 if (busy) return;
                 if (!selected.remove(p.id)) selected.add(p.id);
@@ -749,6 +829,10 @@ public final class MainActivity extends Activity {
             top.addView(check, lp(44, 44));
             card.addView(top);
             image = new PaperPreview(false);
+            image.setOnLongClickListener(v -> {
+                if (!busy) touchHelper.startDrag(this);
+                return true;
+            });
             image.setBackground(shape(Color.rgb(222, 224, 231), 5, Color.TRANSPARENT));
             card.addView(image, lp(-1, getResources().getConfiguration().screenHeightDp < 600 ? 105 : 160));
             name = label("", 12, INK, true);

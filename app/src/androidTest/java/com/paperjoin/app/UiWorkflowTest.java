@@ -19,6 +19,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.widget.TextView;
 
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
@@ -69,7 +70,7 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
             batch.addItem(new ClipData.Item(Uri.fromFile(scan)));
             Intent result = new Intent();
             result.setClipData(batch);
-            getInstrumentation().runOnMainSync(() -> activity.onActivityResult(10, Activity.RESULT_OK, result));
+            onMain(() -> activity.onActivityResult(10, Activity.RESULT_OK, result));
             long deadline = SystemClock.elapsedRealtime() + 30_000;
             while (snapshot(activity).size() != 3 && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(100);
             getInstrumentation().waitForIdleSync();
@@ -91,10 +92,70 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
             for (int index = 0; index < imported.size(); index++) assertEquals(imported.get(index).id, recovered.get(index).id);
             assertTrue("Recovered session is back at its primary path", session.getBaseFile().isFile());
 
-            dragFirstTwo(activity);
+            dragFirstTwo(activity, false);
             assertOrder(context, activity, imported.get(1).id, imported.get(0).id, imported.get(2).id);
-            dragFirstTwo(activity);
+            dragFirstTwo(activity, false);
             assertOrder(context, activity, imported.get(0).id, imported.get(1).id, imported.get(2).id);
+
+            float[] point = imagePoint(activity, 1);
+            long down = SystemClock.uptimeMillis();
+            pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
+            try {
+                SystemClock.sleep(1100);
+                assertSelected(activity);
+            } finally { pointer(down, MotionEvent.ACTION_UP, point[0], point[1]); }
+            SystemClock.sleep(2600);
+            assertSelected(activity); // Releasing before the threshold cancels the pending selection.
+            boolean[] focused = new boolean[1];
+            onMain(() -> focused[0] = activity.getWindow().getDecorView().hasWindowFocus());
+            if (!focused[0]) getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+            getInstrumentation().waitForIdleSync();
+            assertWorkspaceFocused(activity);
+
+            point = imagePoint(activity, 1);
+            down = SystemClock.uptimeMillis();
+            pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
+            try {
+                SystemClock.sleep(2700);
+                assertSelected(activity, 1);
+            } finally { pointer(down, MotionEvent.ACTION_UP, point[0], point[1]); }
+            getInstrumentation().waitForIdleSync();
+            assertSelected(activity, 1);
+            assertWorkspaceFocused(activity);
+            point = imagePoint(activity, 2);
+            down = SystemClock.uptimeMillis();
+            pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
+            SystemClock.sleep(50);
+            pointer(down, MotionEvent.ACTION_UP, point[0], point[1]);
+            getInstrumentation().waitForIdleSync();
+            assertSelected(activity, 1, 2);
+            assertWorkspaceFocused(activity);
+            SystemClock.sleep(500); // Let RecyclerView finish drawing the updated selection borders.
+            screenshot(context, "multi-select.png");
+            onMain(() -> {
+                for (int page : new int[]{1, 2}) {
+                    View check = described(activity.getWindow().getDecorView(), "選取第 " + page + " 頁");
+                    assertNotNull(check);
+                    assertTrue(check.performClick());
+                }
+            });
+            assertSelected(activity);
+
+            dragFirstTwo(activity, true);
+            assertOrder(context, activity, imported.get(1).id, imported.get(0).id, imported.get(2).id);
+            assertSelected(activity);
+            dragFirstTwo(activity, true);
+            assertOrder(context, activity, imported.get(0).id, imported.get(1).id, imported.get(2).id);
+            SystemClock.sleep(2600);
+            assertSelected(activity);
+
+            point = imagePoint(activity, 1);
+            down = SystemClock.uptimeMillis();
+            pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
+            SystemClock.sleep(200);
+            pointer(down, MotionEvent.ACTION_CANCEL, point[0], point[1]);
+            SystemClock.sleep(2600);
+            assertSelected(activity); // A cancelled gesture must never select a page later.
 
             clickRotation(activity, 1);
             assertEquals(90, snapshot(activity).get(0).rotation);
@@ -112,18 +173,20 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
 
             SystemClock.sleep(3000);
             screenshot(context, "workspace.png");
-            getInstrumentation().runOnMainSync(() -> {
-                View preview = described(activity.getWindow().getDecorView(), "預覽第 1 頁，01_Project_SAMPLE.pdf");
-                assertNotNull("First page can open its full preview", preview);
-                assertTrue(preview.performClick());
-            });
+            point = imagePoint(activity, 1);
+            down = SystemClock.uptimeMillis();
+            pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
+            SystemClock.sleep(50);
+            pointer(down, MotionEvent.ACTION_UP, point[0], point[1]);
             SystemClock.sleep(2000);
+            onMain(() -> assertFalse("A short image tap without selection opens preview",
+                    activity.getWindow().getDecorView().hasWindowFocus()));
             screenshot(context, "preview.png");
             getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         } finally {
             try {
                 if (running[0] != null) {
-                    getInstrumentation().runOnMainSync(() -> running[0].finish());
+                    onMain(() -> running[0].finish());
                     getInstrumentation().waitForIdleSync();
                 }
             } finally {
@@ -133,6 +196,15 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
                 backup.delete(); // Keep recovery metadata if any restore step above fails.
             }
         }
+    }
+
+    private void onMain(Runnable action) {
+        Throwable[] failure = new Throwable[1];
+        getInstrumentation().runOnMainSync(() -> {
+            try { action.run(); }
+            catch (RuntimeException | Error e) { failure[0] = e; }
+        });
+        if (failure[0] != null) throw new AssertionError("Main-thread check failed", failure[0]);
     }
 
     private void writeAtomic(AtomicFile file, byte[] data) throws IOException {
@@ -161,22 +233,55 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
 
     private List<PageItem> snapshot(MainActivity activity) {
         List<PageItem> copy = new ArrayList<>();
-        getInstrumentation().runOnMainSync(() -> {
+        onMain(() -> {
             for (PageItem page : activity.pages) copy.add(page.copy());
         });
         return copy;
     }
 
-    private void dragFirstTwo(MainActivity activity) {
+    private float[] imagePoint(MainActivity activity, int page) {
+        getInstrumentation().waitForIdleSync();
+        float[] point = new float[2];
+        onMain(() -> {
+            View image = described(activity.getWindow().getDecorView(), "預覽第 " + page + " 頁，"
+                    + activity.pages.get(page - 1).sourceName);
+            assertNotNull("Page image is available", image);
+            int[] location = new int[2];
+            image.getLocationOnScreen(location);
+            point[0] = location[0] + image.getWidth() / 2f;
+            point[1] = location[1] + image.getHeight() / 2f;
+        });
+        return point;
+    }
+
+    private void assertSelected(MainActivity activity, int... selectedPages) {
+        getInstrumentation().waitForIdleSync();
+        onMain(() -> {
+            for (int page = 1; page <= 3; page++) {
+                View check = described(activity.getWindow().getDecorView(), "選取第 " + page + " 頁");
+                assertTrue("Page checkbox is available", check instanceof TextView);
+                boolean expected = false;
+                for (int selected : selectedPages) if (selected == page) expected = true;
+                assertEquals("Selected page " + page, expected, "✓".contentEquals(((TextView) check).getText()));
+            }
+        });
+    }
+
+    private void assertWorkspaceFocused(MainActivity activity) {
+        onMain(() -> assertTrue("Selection must not open the preview dialog",
+                activity.getWindow().getDecorView().hasWindowFocus()));
+    }
+
+    private void dragFirstTwo(MainActivity activity, boolean fromImage) {
         SystemClock.sleep(400);
         getInstrumentation().waitForIdleSync();
         float[] points = new float[4];
-        getInstrumentation().runOnMainSync(() -> {
+        onMain(() -> {
             for (int page = 0; page < 2; page++) {
                 View preview = described(activity.getWindow().getDecorView(), "預覽第 " + (page + 1) + " 頁，"
                         + activity.pages.get(page).sourceName);
                 assertNotNull("Page preview is visible for dragging", preview);
-                View handle = described((View) preview.getParent(), "長按拖拉排序");
+                View handle = fromImage ? preview : described((View) preview.getParent(), "長按拖拉排序");
                 assertNotNull("Page has a drag handle", handle);
                 int[] location = new int[2];
                 handle.getLocationOnScreen(location);
@@ -191,12 +296,16 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
         long down = SystemClock.uptimeMillis();
         pointer(down, MotionEvent.ACTION_DOWN, points[0], points[1]);
         try {
-            SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 200);
+            SystemClock.sleep(fromImage ? 700 : ViewConfiguration.getLongPressTimeout() + 200);
             for (int step = 1; step <= 12; step++) {
                 float fraction = step / 12f;
                 pointer(down, MotionEvent.ACTION_MOVE, points[0] + (points[2] - points[0]) * fraction,
                         points[1] + (points[3] - points[1]) * fraction);
                 SystemClock.sleep(40);
+            }
+            if (fromImage) {
+                SystemClock.sleep(1700);
+                assertSelected(activity);
             }
         } finally {
             pointer(down, MotionEvent.ACTION_UP, points[2], points[3]);
@@ -225,7 +334,7 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
 
     private void clickRotation(MainActivity activity, int page) {
         getInstrumentation().waitForIdleSync();
-        getInstrumentation().runOnMainSync(() -> {
+        onMain(() -> {
             View button = described(activity.getWindow().getDecorView(), "順時針旋轉第 " + page + " 頁");
             assertNotNull("Page " + page + " has an accessible rotation control", button);
             assertTrue(button.isEnabled());
