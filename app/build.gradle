@@ -7,7 +7,7 @@ def signingFile = rootProject.file('.signing/signing.properties')
 if (signingFile.exists()) signingFile.withInputStream { signing.load(it) }
 def signingValue = { env, key -> System.getenv(env) ?: signing.getProperty(key) }
 def releaseKey = signingValue('ANDROID_KEYSTORE_PATH', 'storeFile')
-def appVersion = providers.gradleProperty('versionName').getOrElse('1.0.1')
+def appVersion = providers.gradleProperty('versionName').getOrElse('1.0.2')
 def parts = appVersion.tokenize('.').collect { it.toInteger() }
 
 android {

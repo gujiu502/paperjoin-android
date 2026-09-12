@@ -101,10 +101,10 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
             long down = SystemClock.uptimeMillis();
             pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
             try {
-                SystemClock.sleep(1100);
+                SystemClock.sleep(700);
                 assertSelected(activity);
             } finally { pointer(down, MotionEvent.ACTION_UP, point[0], point[1]); }
-            SystemClock.sleep(2600);
+            SystemClock.sleep(1200);
             assertSelected(activity); // Releasing before the threshold cancels the pending selection.
             boolean[] focused = new boolean[1];
             onMain(() -> focused[0] = activity.getWindow().getDecorView().hasWindowFocus());
@@ -116,7 +116,7 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
             down = SystemClock.uptimeMillis();
             pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
             try {
-                SystemClock.sleep(2700);
+                SystemClock.sleep(1200);
                 assertSelected(activity, 1);
             } finally { pointer(down, MotionEvent.ACTION_UP, point[0], point[1]); }
             getInstrumentation().waitForIdleSync();
@@ -146,7 +146,7 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
             assertSelected(activity);
             dragFirstTwo(activity, true);
             assertOrder(context, activity, imported.get(0).id, imported.get(1).id, imported.get(2).id);
-            SystemClock.sleep(2600);
+            SystemClock.sleep(1200);
             assertSelected(activity);
 
             point = imagePoint(activity, 1);
@@ -154,7 +154,7 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
             pointer(down, MotionEvent.ACTION_DOWN, point[0], point[1]);
             SystemClock.sleep(200);
             pointer(down, MotionEvent.ACTION_CANCEL, point[0], point[1]);
-            SystemClock.sleep(2600);
+            SystemClock.sleep(1200);
             assertSelected(activity); // A cancelled gesture must never select a page later.
 
             clickRotation(activity, 1);
@@ -304,7 +304,7 @@ public final class UiWorkflowTest extends InstrumentationTestCase {
                 SystemClock.sleep(40);
             }
             if (fromImage) {
-                SystemClock.sleep(1700);
+                SystemClock.sleep(700);
                 assertSelected(activity);
             }
         } finally {

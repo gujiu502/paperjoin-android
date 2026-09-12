@@ -65,7 +65,7 @@ public final class MainActivity extends Activity {
         INK = Color.rgb(247, 248, 250), MUTED = Color.rgb(164, 170, 185),
         ACCENT = Color.rgb(94, 106, 210), SOFT = Color.rgb(177, 185, 255);
     private static final int PICK = 10, SAVE = 11;
-    private static final long MULTI_SELECT_HOLD_MS = 2500;
+    private static final long MULTI_SELECT_HOLD_MS = 1000;
     final ArrayList<PageItem> pages = new ArrayList<>();
     private final Set<String> selected = new HashSet<>();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -678,7 +678,7 @@ public final class MainActivity extends Activity {
         for (PageItem p : pages) if (files.add(p.sourcePath)) bytes += new File(p.sourcePath).length();
         count.setText(pages.isEmpty() ? "PDF、JPG、PNG、WebP · 可一次選取多個檔案" :
             pages.size() + " 頁  ·  " + files.size() + " 個來源  ·  " + size(bytes));
-        selectionLabel.setText(selected.isEmpty() ? "長按拖拉排序 · 按住圖片 2.5 秒多選 · 點圖放大" :
+        selectionLabel.setText(selected.isEmpty() ? "長按拖拉排序 · 按住圖片 1 秒多選 · 點圖放大" :
             "已選 " + selected.size() + " 頁 · 點圖繼續多選 · 旋轉只套用選取頁面");
         selectButton.setText(!pages.isEmpty() && selected.size() == pages.size() ? "取消" : "全選");
         empty.setVisibility(pages.isEmpty() ? View.VISIBLE : View.GONE);
